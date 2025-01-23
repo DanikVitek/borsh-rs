@@ -1,12 +1,13 @@
-use core::marker::PhantomData;
-use core::mem::MaybeUninit;
 use core::{
     convert::{TryFrom, TryInto},
-    mem::size_of,
+    marker::PhantomData,
+    mem::{size_of, MaybeUninit},
 };
+#[cfg(feature = "async")]
+use core::{future::Future, pin::Pin};
 
 #[cfg(feature = "bytes")]
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::__private::maybestd::{
     borrow::{Borrow, Cow, ToOwned},
@@ -17,6 +18,8 @@ use crate::__private::maybestd::{
     vec,
     vec::Vec,
 };
+#[cfg(feature = "async")]
+use crate::async_io::AsyncRead;
 use crate::io::{Error, ErrorKind, Read, Result};
 
 use crate::error::check_zst;
@@ -74,6 +77,58 @@ pub trait BorshDeserialize: Sized {
     fn array_from_reader<R: Read, const N: usize>(reader: &mut R) -> Result<Option<[Self; N]>> {
         let _ = reader;
         Ok(None)
+    }
+}
+
+/// A data-structure that can be de-serialized from binary format by NBOR.
+#[cfg(feature = "async")]
+pub trait BorshDeserializeAsync: Sized {
+    fn deserialize_reader<'a, R: AsyncRead>(
+        reader: &'a mut R,
+    ) -> Pin<Box<dyn Future<Output = Result<Self>> + Send + 'a>>
+    where
+        Self: Send + 'a;
+
+    fn try_from_reader<'a, R: AsyncRead>(
+        reader: &'a mut R,
+    ) -> Pin<Box<dyn Future<Output = Result<Self>> + Send + 'a>>
+    where
+        Self: Send + 'a,
+    {
+        Box::pin(async move {
+            let result = Self::deserialize_reader(reader).await?;
+            let mut buf = [0u8; 1];
+            match reader.read_exact(&mut buf).await {
+                Err(f) if f.kind() == ErrorKind::UnexpectedEof => Ok(result),
+                _ => Err(Error::new(ErrorKind::InvalidData, ERROR_NOT_ALL_BYTES_READ)),
+            }
+        })
+    }
+
+    #[inline]
+    #[doc(hidden)]
+    fn vec_from_reader<'a, R: AsyncRead>(
+        len: u32,
+        reader: &'a mut R,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<Self>>>> + Send + 'a>>
+    where
+        Self: Send + 'a,
+    {
+        _ = len;
+        _ = reader;
+        Box::pin(core::future::ready(Ok(None)))
+    }
+
+    #[inline]
+    #[doc(hidden)]
+    fn array_from_reader<'a, R: AsyncRead, const N: usize>(
+        reader: &'a mut R,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<[Self; N]>>> + Send + 'a>>
+    where
+        Self: Send + 'a,
+    {
+        _ = reader;
+        Box::pin(core::future::ready(Ok(None)))
     }
 }
 
@@ -135,6 +190,68 @@ pub trait EnumExt: BorshDeserialize {
     fn deserialize_variant<R: Read>(reader: &mut R, tag: u8) -> Result<Self>;
 }
 
+/// Additional methods offered on enums which is used by `[derive(BorshDeserialize)]`.
+#[cfg(feature = "async")]
+pub trait EnumExtAsync: BorshDeserializeAsync {
+    /// Deserialises given variant of an enum from the reader.
+    ///
+    /// This may be used to perform validation or filtering based on what
+    /// variant is being deserialised.
+    ///
+    /// ```
+    /// use borsh::BorshDeserialize;
+    /// use borsh::de::EnumExt as _;
+    ///
+    /// /// derive is only available if borsh is built with `features = ["derive"]`
+    /// # #[cfg(feature = "derive")]
+    /// #[derive(Debug, PartialEq, Eq, BorshDeserialize)]
+    /// enum MyEnum {
+    ///     Zero,
+    ///     One(u8),
+    ///     Many(Vec<u8>)
+    /// }
+    ///
+    /// # #[cfg(feature = "derive")]
+    /// #[derive(Debug, PartialEq, Eq)]
+    /// struct OneOrZero(MyEnum);
+    ///
+    /// # #[cfg(feature = "derive")]
+    /// impl borsh::de::BorshDeserialize for OneOrZero {
+    ///     fn deserialize_reader<R: borsh::io::Read>(
+    ///         reader: &mut R,
+    ///     ) -> borsh::io::Result<Self> {
+    ///         use borsh::de::EnumExt;
+    ///         let tag = u8::deserialize_reader(reader)?;
+    ///         if tag == 2 {
+    ///             Err(borsh::io::Error::new(
+    ///                 borsh::io::ErrorKind::InvalidData,
+    ///                 "MyEnum::Many not allowed here",
+    ///             ))
+    ///         } else {
+    ///             MyEnum::deserialize_variant(reader, tag).map(Self)
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// use borsh::from_slice;
+    /// let data = b"\0";
+    /// # #[cfg(feature = "derive")]
+    /// assert_eq!(MyEnum::Zero, from_slice::<MyEnum>(&data[..]).unwrap());
+    /// # #[cfg(feature = "derive")]
+    /// assert_eq!(MyEnum::Zero, from_slice::<OneOrZero>(&data[..]).unwrap().0);
+    ///
+    /// let data = b"\x02\0\0\0\0";
+    /// # #[cfg(feature = "derive")]
+    /// assert_eq!(MyEnum::Many(Vec::new()), from_slice::<MyEnum>(&data[..]).unwrap());
+    /// # #[cfg(feature = "derive")]
+    /// assert!(from_slice::<OneOrZero>(&data[..]).is_err());
+    /// ```
+    fn deserialize_variant<'a, R: AsyncRead>(
+        reader: &'a mut R,
+        tag: u8,
+    ) -> Pin<Box<dyn Future<Output = Result<Self>> + Send + 'a>>;
+}
+
 fn unexpected_eof_to_unexpected_length_of_input(e: Error) -> Error {
     if e.kind() == ErrorKind::UnexpectedEof {
         Error::new(ErrorKind::InvalidData, ERROR_UNEXPECTED_LENGTH_OF_INPUT)
@@ -191,6 +308,82 @@ impl BorshDeserialize for u8 {
             .read_exact(&mut arr)
             .map_err(unexpected_eof_to_unexpected_length_of_input)?;
         Ok(Some(arr))
+    }
+}
+
+#[cfg(feature = "async")]
+impl BorshDeserializeAsync for u8 {
+    #[inline]
+    fn deserialize_reader<'a, R: AsyncRead>(
+        reader: &'a mut R,
+    ) -> Pin<Box<dyn Future<Output = Result<Self>> + Send + 'a>>
+    where
+        Self: Send + 'a,
+    {
+        Box::pin(async move {
+            let mut buf = [0u8; 1];
+            reader
+                .read_exact(&mut buf)
+                .await
+                .map_err(unexpected_eof_to_unexpected_length_of_input)?;
+            Ok(buf[0])
+        })
+    }
+
+    #[inline]
+    #[doc(hidden)]
+    fn vec_from_reader<'a, R: AsyncRead>(
+        len: u32,
+        reader: &'a mut R,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<Self>>>> + Send + 'a>>
+    where
+        Self: Send + 'a,
+    {
+        Box::pin(async move {
+            let len: usize = len.try_into().map_err(|_| ErrorKind::InvalidData)?;
+            // Avoid OOM by limiting the size of allocation.  This makes the read
+            // less efficient (since we need to loop and reallocate) but it protects
+            // us from someone sending us [0xff, 0xff, 0xff, 0xff] and forcing us to
+            // allocate 4GiB of memory.
+            let mut vec = vec![0u8; len.min(1024 * 1024)];
+            let mut pos = 0;
+            while pos < len {
+                if pos == vec.len() {
+                    vec.resize(vec.len().saturating_mul(2).min(len), 0)
+                }
+                // TODO(mina86): Convert this to read_buf once that stabilises.
+                match reader.read(&mut vec.as_mut_slice()[pos..]).await? {
+                    0 => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            ERROR_UNEXPECTED_LENGTH_OF_INPUT,
+                        ))
+                    }
+                    read => {
+                        pos += read;
+                    }
+                }
+            }
+            Ok(Some(vec))
+        })
+    }
+
+    #[inline]
+    #[doc(hidden)]
+    fn array_from_reader<'a, R: AsyncRead, const N: usize>(
+        reader: &'a mut R,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<[Self; N]>>> + Send + 'a>>
+    where
+        Self: Send + 'a,
+    {
+        Box::pin(async move {
+            let mut arr = [0u8; N];
+            reader
+                .read_exact(&mut arr)
+                .await
+                .map_err(unexpected_eof_to_unexpected_length_of_input)?;
+            Ok(Some(arr))
+        })
     }
 }
 
@@ -335,6 +528,37 @@ where
     }
 }
 
+impl<T> BorshDeserializeAsync for Option<T>
+where
+    T: BorshDeserializeAsync + Send,
+{
+    #[inline]
+    fn deserialize_reader<'a, R: AsyncRead>(
+        reader: &'a mut R,
+    ) -> Pin<Box<dyn Future<Output = Result<Self>> + Send + 'a>>
+    where
+        Self: Send + 'a,
+    {
+        Box::pin(async move {
+            let flag: u8 = BorshDeserializeAsync::deserialize_reader(reader).await?;
+            if flag == 0 {
+                Ok(None)
+            } else if flag == 1 {
+                Ok(Some(
+                    <T as BorshDeserializeAsync>::deserialize_reader(reader).await?,
+                ))
+            } else {
+                let msg = format!(
+                    "Invalid Option representation: {}. The first byte must be 0 or 1",
+                    flag
+                );
+
+                Err(Error::new(ErrorKind::InvalidData, msg))
+            }
+        })
+    }
+}
+
 impl<T, E> BorshDeserialize for core::result::Result<T, E>
 where
     T: BorshDeserialize,
@@ -422,7 +646,7 @@ where
 }
 
 #[cfg(feature = "bytes")]
-impl BorshDeserialize for bytes::Bytes {
+impl BorshDeserialize for Bytes {
     #[inline]
     fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self> {
         let vec = <Vec<u8>>::deserialize_reader(reader)?;
@@ -431,13 +655,13 @@ impl BorshDeserialize for bytes::Bytes {
 }
 
 #[cfg(feature = "bytes")]
-impl BorshDeserialize for bytes::BytesMut {
+impl BorshDeserialize for BytesMut {
     #[inline]
     fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self> {
         let len = u32::deserialize_reader(reader)?;
         let mut out = BytesMut::with_capacity(hint::cautious::<u8>(len));
         for _ in 0..len {
-            out.put_u8(u8::deserialize_reader(reader)?);
+            out.put_u8(BorshDeserialize::deserialize_reader(reader)?);
         }
         Ok(out)
     }
@@ -647,7 +871,7 @@ where
 impl BorshDeserialize for std::net::SocketAddr {
     #[inline]
     fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self> {
-        let kind = u8::deserialize_reader(reader)?;
+        let kind = <u8 as BorshDeserialize>::deserialize_reader(reader)?;
         match kind {
             0 => std::net::SocketAddrV4::deserialize_reader(reader).map(std::net::SocketAddr::V4),
             1 => std::net::SocketAddrV6::deserialize_reader(reader).map(std::net::SocketAddr::V6),
@@ -663,7 +887,7 @@ impl BorshDeserialize for std::net::SocketAddr {
 impl BorshDeserialize for std::net::IpAddr {
     #[inline]
     fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self> {
-        let kind = u8::deserialize_reader(reader)?;
+        let kind = <u8 as BorshDeserialize>::deserialize_reader(reader)?;
         match kind {
             0u8 => {
                 // Deserialize an Ipv4Addr and convert it to IpAddr::V4
@@ -807,7 +1031,7 @@ fn array_deserialization_doesnt_leak() {
     struct MyType(u8);
     impl BorshDeserialize for MyType {
         fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self> {
-            let val = u8::deserialize_reader(reader)?;
+            let val = <u8 as BorshDeserialize>::deserialize_reader(reader)?;
             let v = DESERIALIZE_COUNT.fetch_add(1, Ordering::SeqCst);
             if v >= 7 {
                 panic!("panic in deserialize");
@@ -893,7 +1117,7 @@ macro_rules! impl_range {
         impl<T: BorshDeserialize> BorshDeserialize for core::ops::$type<T> {
             #[inline]
             fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self> {
-                let ($($side,)*) = <_>::deserialize_reader(reader)?;
+                let ($($side,)*) = <_ as BorshDeserialize>::deserialize_reader(reader)?;
                 Ok($make)
             }
         }
@@ -911,7 +1135,7 @@ impl_range!(RangeToInclusive, ..=end, end);
 pub mod rc {
     //!
     //! Module defines [BorshDeserialize] implementation for
-    //! [alloc::rc::Rc](std::rc::Rc) and [alloc::sync::Arc](std::sync::Arc).
+    //! [`alloc::rc::Rc`](alloc::rc::Rc) and [`alloc::sync::Arc`](alloc::sync::Arc).
     use crate::__private::maybestd::{boxed::Box, rc::Rc, sync::Arc};
     use crate::io::{Read, Result};
     use crate::BorshDeserialize;

@@ -45,6 +45,13 @@ compile_error!("feature \"std\" and feature \"hashbrown\" don't make sense at th
 use std::io as io_impl;
 #[cfg(not(feature = "std"))]
 mod nostd_io;
+
+#[cfg(feature = "async")]
+pub mod async_io;
+
+#[cfg(all(feature = "tokio", feature = "async-std"))]
+compile_error!("feature \"tokio\" and feature \"async-std\" can't be enabled at the same time");
+
 #[cfg(not(feature = "std"))]
 use nostd_io as io_impl;
 
