@@ -56,6 +56,11 @@ use nostd_io as io_impl;
 pub mod io {
     pub use super::io_impl::{Error, ErrorKind, Read, Result, Write};
 }
+#[cfg(feature = "async")]
+pub mod async_io;
+
+#[cfg(all(feature = "tokio", feature = "async-std"))]
+compile_error!("feature \"tokio\" and feature \"async-std\" can't be enabled at the same time");
 
 #[doc(hidden)]
 pub mod __private {
