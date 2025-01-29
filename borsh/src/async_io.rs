@@ -1,5 +1,6 @@
 use core::future::Future;
-use std::io::Result;
+
+use crate::io::Result;
 
 pub trait AsyncRead: Unpin + Send {
     fn read<'a>(&'a mut self, buf: &'a mut [u8])
@@ -306,7 +307,7 @@ pub trait AsyncWrite: Unpin + Send {
 }
 
 #[cfg(feature = "tokio")]
-impl<R: tokio::io::AsyncWriteExt + Unpin + Send> AsyncWrite for R {
+impl<R: tokio::io::AsyncWrite + Unpin + Send> AsyncWrite for R {
     #[inline]
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = Result<()>> + Send + 'a {
         tokio::io::AsyncWriteExt::write_all(self, buf)
@@ -374,7 +375,7 @@ impl<R: tokio::io::AsyncWriteExt + Unpin + Send> AsyncWrite for R {
 }
 
 #[cfg(feature = "async-std")]
-impl<R: async_std::io::WriteExt + Unpin + Send> AsyncWrite for R {
+impl<R: async_std::io::Write + Unpin + Send> AsyncWrite for R {
     #[inline]
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = Result<()>> + Send + 'a {
         async_std::io::WriteExt::write_all(self, buf)
