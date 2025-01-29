@@ -1,10 +1,13 @@
 //! This library contains data structures used for benchmarking.
 
-use borsh::{BorshDeserialize, BorshSerialize};
-use rand::distributions::{Alphanumeric, Distribution, Standard};
-use rand::Rng;
-use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 extern crate speedy_derive;
+
+use borsh::{BorshDeserialize, BorshSerialize};
+use rand::{
+    distributions::{Alphanumeric, Distribution, Standard},
+    Rng,
+};
+use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use speedy::{Context, Readable, Reader, Writable, Writer};
 
 pub trait Generate {

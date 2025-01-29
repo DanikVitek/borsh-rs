@@ -1,5 +1,6 @@
-use borsh::BorshDeserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+use borsh::BorshDeserialize;
 
 #[macro_use]
 extern crate honggfuzz;

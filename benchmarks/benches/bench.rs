@@ -1,11 +1,9 @@
 use benchmarks::{Account, Block, BlockHeader, Generate, SignedTransaction};
 use borsh::{from_slice, to_vec, BorshDeserialize, BorshSerialize};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::SeedableRng;
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
-use speedy::Endianness;
-use speedy::{Readable, Writable};
-
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use speedy::{Endianness, Readable, Writable};
 
 fn ser_obj<T>(group_name: &str, num_samples: usize, c: &mut Criterion)
 where

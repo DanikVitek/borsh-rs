@@ -14,11 +14,9 @@ use syn::{DeriveInput, Error, ItemEnum, ItemStruct, ItemUnion, Path};
 ///  by convention, local to borsh-derive crate, imports from proc_macro (1) are not allowed in `internals` module or in any of its submodules.
 mod internals;
 
-use crate::internals::attributes::item;
-
 #[cfg(feature = "schema")]
-use internals::schema;
-use internals::{cratename, deserialize, serialize};
+use crate::internals::schema;
+use crate::internals::{attributes::item, cratename, deserialize, serialize};
 
 fn check_attrs_get_cratename(input: &TokenStream) -> Result<Path, Error> {
     let input = input.clone();

@@ -4,9 +4,8 @@ use std::{
     iter::FromIterator,
 };
 
-use borsh::{to_vec, BorshSerialize};
-
 use benchmarks::Generate;
+use borsh::{to_vec, BorshSerialize};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::SeedableRng;
 
